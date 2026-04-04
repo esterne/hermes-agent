@@ -787,18 +787,19 @@ class BasePlatformAdapter(ABC):
         has_voice_tag = "[[audio_as_voice]]" in content
         cleaned = cleaned.replace("[[audio_as_voice]]", "")
         
-        # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
-        # and quoted/backticked paths for LLM-formatted outputs.
-        media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
-        )
+        # Extract MEDIA:<path> tags, allowing optional whitespace after the colon.
+        # We parse one line at a time so we don't accidentally consume an entire
+        # paragraph when the model adds extra commentary after the path.
+        media_pattern = re.compile(r'''(?m)^[ \t]*[`"']?MEDIA:\s*(?P<path>.+?)[`"']?[ \t]*$''')
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
             if path:
-                media.append((path, has_voice_tag))
+                expanded = os.path.expanduser(path)
+                if os.path.isfile(expanded):
+                    media.append((expanded, has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:
@@ -824,11 +825,17 @@ class BasePlatformAdapter(ABC):
             Tuple of (list of expanded file paths, cleaned text with the
             raw path strings removed).
         """
-        _LOCAL_MEDIA_EXTS = (
+        # Accept common binary and document file types. Anything else can still
+        # be delivered through MEDIA:<path> if the path exists.
+        _LOCAL_FILE_EXTS = (
             '.png', '.jpg', '.jpeg', '.gif', '.webp',
             '.mp4', '.mov', '.avi', '.mkv', '.webm',
+            '.ogg', '.opus', '.mp3', '.wav', '.m4a',
+            '.pdf', '.doc', '.docx', '.xls', '.xlsx',
+            '.ppt', '.pptx', '.txt', '.rtf', '.csv',
+            '.zip', '.tar', '.gz', '.tgz', '.7z', '.rar',
         )
-        ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
+        ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_FILE_EXTS)
 
         # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png)
         #             and relative paths (./foo.png)
